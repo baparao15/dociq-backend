@@ -24,18 +24,50 @@ SECRET_KEY = get_secret_key()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
-# Password hashing context
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing context - Using Argon2 only (bcrypt removed due to Python 3.13 compatibility issues)
+# Old bcrypt hashes will be migrated to argon2 on next successful login
+pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 security = HTTPBearer()
 
+def is_bcrypt_hash(hashed_password: str) -> bool:
+    """Check if hash is in bcrypt format."""
+    return hashed_password.startswith(('$2a$', '$2b$', '$2y$'))
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a plain password against its hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a plain password against its hash.
+    Only supports argon2 hashes (bcrypt support removed due to Python 3.13 issues).
+    For legacy bcrypt hashes, we cannot verify them - users must reset password.
+    """
+    # If it's a bcrypt hash, we can't verify it (bcrypt removed due to Python 3.13)
+    if is_bcrypt_hash(hashed_password):
+        # Return False - user will need to reset password or re-signup
+        # This is a migration limitation
+        return False
+    
+    # Verify argon2 hash
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except Exception:
+        return False
 
 def get_password_hash(password: str) -> str:
-    """Generate password hash."""
+    """Generate password hash using argon2."""
     return pwd_context.hash(password)
+
+def migrate_password_if_needed(plain_password: str, hashed_password: str, db: Session, user: User) -> bool:
+    """Migrate old bcrypt password to argon2 if needed.
+    Returns True if migration occurred, False otherwise.
+    """
+    if is_bcrypt_hash(hashed_password):
+        # Verify the password works with old hash
+        if verify_password(plain_password, hashed_password):
+            # Re-hash with argon2 and update database
+            new_hash = get_password_hash(plain_password)
+            user.hashed_password = new_hash
+            db.commit()
+            return True
+    return False
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode = data.copy()

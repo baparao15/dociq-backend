@@ -19,7 +19,9 @@ from auth import (
     verify_password,
     create_access_token,
     get_current_active_user,
-    ACCESS_TOKEN_EXPIRE_MINUTES
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    is_bcrypt_hash,
+    migrate_password_if_needed
 )
 from document_processor import DocumentProcessor
 from risk_analyzer import RiskAnalyzer
@@ -119,11 +121,28 @@ async def signup(request: SignupRequest, db: Session = Depends(get_db)):
 @app.post("/api/auth/login", response_model=TokenResponse)
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == request.email).first()
-    if not user or not verify_password(request.password, user.hashed_password):
+    if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
         )
+    
+    # Check if password is using old bcrypt hash
+    if is_bcrypt_hash(user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Password system updated. Please reset your password or contact support. For testing, please create a new account."
+        )
+    
+    # Verify password
+    if not verify_password(request.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password"
+        )
+    
+    # Migrate to argon2 if needed (shouldn't happen if bcrypt check above worked)
+    migrate_password_if_needed(request.password, user.hashed_password, db, user)
     
     access_token = create_access_token(
         data={"sub": user.email},

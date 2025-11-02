@@ -30,6 +30,14 @@ pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 security = HTTPBearer()
 
+# ---------- DEVELOPMENT BYPASS CONFIG ----------
+# WARNING: These are DEVELOPMENT ONLY. Remove before production.
+TEMP_DEV_TOKEN = "dev-test-token"
+TEMP_DEV_EMAIL = "test@exampl.com"   # as you provided
+TEMP_DEV_PASSWORD = "mypassword123"  # as you provided
+TEMP_DEV_PASSWORD_MARKER = "dev_bypass_test_user"
+# ------------------------------------------------
+
 def is_bcrypt_hash(hashed_password: str) -> bool:
     """Check if hash is in bcrypt format."""
     return hashed_password.startswith(('$2a$', '$2b$', '$2y$'))
@@ -39,12 +47,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     Only supports argon2 hashes (bcrypt support removed due to Python 3.13 issues).
     For legacy bcrypt hashes, we cannot verify them - users must reset password.
     """
+
+    # ---------- DEV BYPASS: allow the test email/password combo ----------
+    # This makes it possible to verify using the literal marker in DB or using
+    # a direct token-based shortcut handled in get_current_user().
+    # Remove this block before production.
+    if plain_password == TEMP_DEV_PASSWORD and hashed_password == TEMP_DEV_PASSWORD_MARKER:
+        return True
+    # --------------------------------------------------------------------
+
     # If it's a bcrypt hash, we can't verify it (bcrypt removed due to Python 3.13)
     if is_bcrypt_hash(hashed_password):
         # Return False - user will need to reset password or re-signup
         # This is a migration limitation
         return False
-    
+
     # Verify argon2 hash
     try:
         return pwd_context.verify(plain_password, hashed_password)
@@ -95,21 +112,37 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    
+
     token = credentials.credentials
+
+    # ----------------- DEVELOPMENT BYPASS -----------------
+    # Accept a special development token or a literal "email:password" token
+    # matching the TEMP_DEV_EMAIL and TEMP_DEV_PASSWORD above.
+    # This returns a fake User object for quick local development.
+    # REMOVE THIS BEFORE PRODUCTION.
+    if token == TEMP_DEV_TOKEN or token == f"{TEMP_DEV_EMAIL}:{TEMP_DEV_PASSWORD}":
+        fake_user = User(
+            id=999999,
+            email=TEMP_DEV_EMAIL,
+            hashed_password=TEMP_DEV_PASSWORD_MARKER,
+            is_active=True
+        )
+        return fake_user
+    # -----------------------------------------------------
+
     payload = decode_access_token(token)
-    
+
     if payload is None:
         raise credentials_exception
-    
+
     email: str = payload.get("sub")
     if email is None:
         raise credentials_exception
-    
+
     user = db.query(User).filter(User.email == email).first()
     if user is None:
         raise credentials_exception
-    
+
     return user
 
 async def get_current_active_user(current_user: User = Depends(get_current_user)) -> User:
